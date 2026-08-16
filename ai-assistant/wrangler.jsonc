@@ -1,0 +1,20 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "ai-assistant",
+	"main": "src/index.js",
+	"compatibility_date": "2026-08-13",
+	"observability": {
+		"enabled": true
+	},
+	"upload_source_maps": true,
+	"find_additional_modules": true,
+	"rules": [
+		{
+			"type": "Text",
+			"globs": [
+				"**/*.md"
+			],
+			"fallthrough": true
+		}
+	]
+}

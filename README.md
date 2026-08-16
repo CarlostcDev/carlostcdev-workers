@@ -99,13 +99,13 @@ The repository already contains the Wrangler configuration.
 The current Worker is named:
 
 ```text
-api
+ai-assistant
 ```
 
 and its entry point is:
 
 ```text
-src/index.js
+src/index.ts
 ```
 
 This is configured in `wrangler.jsonc`.
@@ -114,8 +114,8 @@ The relevant configuration is:
 
 ```jsonc
 {
-  "name": "api",
-  "main": "src/index.js"
+  "name": "ai-assistant",
+  "main": "src/index.ts"
 }
 ```
 
@@ -134,13 +134,13 @@ https://ai-assistant.carlostcdev.workers.dev
 The important part is:
 
 ```text
-api.carlostcdev-chatbot
+ai-assistant.carlostcdev-chatbot
 ```
 
 The Worker itself is named:
 
 ```text
-api
+ai-assistant
 ```
 
 If you want to deploy this project under your own Cloudflare Worker URL, the URL will normally follow the form:
@@ -149,14 +149,14 @@ If you want to deploy this project under your own Cloudflare Worker URL, the URL
 https://<worker-name>.<your-workers-subdomain>.workers.dev
 ```
 
-For this project, the Worker name is configured as `api`.
+For this project, the Worker name is configured as `ai-assistant`.
 
 ## Enable the workers.dev route
 
 In Cloudflare:
 
 1. Open **Workers & Pages**.
-2. Open the Worker named **api**.
+2. Open the Worker named **ai-assistant**.
 3. Open **Settings**.
 4. Open **Domains & Routes**.
 5. Add or enable the `workers.dev` domain for the Worker.
@@ -169,7 +169,7 @@ For this project the resulting public endpoint is:
 https://ai-assistant.carlostcdev.workers.dev
 ```
 
-If you use a custom domain instead, add the domain or route from **Workers & Pages → api → Settings → Domains & Routes**.
+If you use a custom domain instead, add the domain or route from **Workers & Pages → ai-assistant → Settings → Domains & Routes**.
 
 ---
 
@@ -197,7 +197,7 @@ npx wrangler secret put GEMINI_API_KEY
 
 Paste your Google Gemini API key when prompted.
 
-Do not put the API key directly into `src/index.js`.
+Do not put the API key directly into `src/index.ts`.
 
 ---
 
@@ -240,10 +240,10 @@ Example request:
 The assistant's professional context is inside:
 
 ```text
-src/index.js
+src/agents/AGENT.md
 ```
 
-The `systemInstruction` defines what the AI knows and how it behaves.
+The Worker loads that file into `systemInstruction`.
 
 This is the section you should edit when adapting the project to another portfolio.
 
@@ -297,11 +297,11 @@ wrangler.jsonc
 The current Worker configuration uses:
 
 ```text
-name: api
-entry point: src/index.js
+name: ai-assistant
+entry point: src/index.ts
 ```
 
-and the Worker is therefore deployed as the `api` Worker.
+and the Worker is therefore deployed as the `ai-assistant` Worker.
 
 ---
 
@@ -356,7 +356,7 @@ wrangler.jsonc
 Current value:
 
 ```jsonc
-"name": "api"
+"name": "ai-assistant"
 ```
 
 For example:
@@ -385,7 +385,7 @@ https://api.example.com
 
 configure it in:
 
-**Cloudflare Dashboard → Workers & Pages → api → Settings → Domains & Routes**
+**Cloudflare Dashboard → Workers & Pages → ai-assistant → Settings → Domains & Routes**
 
 The Worker name and the public hostname are related, but they are not the same configuration.
 
@@ -393,7 +393,7 @@ The Worker name and the public hostname are related, but they are not the same c
 
 # 11. Update an existing deployment
 
-After changing `src/index.js` or `wrangler.jsonc`:
+After changing `src/index.ts` or `wrangler.jsonc`:
 
 ```bash
 npm run dev
@@ -455,12 +455,14 @@ ai-assistant/
 │   ├── gemini-3.gif
 │   └── cloudfare-workers.webp
 ├── src/
-│   └── index.js
+│   ├── agents/
+│   │   └── AGENT.md
+│   └── index.ts
 ├── package.json
 └── wrangler.jsonc
 ```
 
-The repository's Wrangler configuration uses `src/index.js` as the Worker entry point and names the Worker `api`.
+The repository's Wrangler configuration uses `src/index.ts` as the Worker entry point and names the Worker `ai-assistant`.
 
 ---
 
@@ -487,7 +489,7 @@ GitHub
 https://github.com/CarlostcDev/ai-assistant.git
 
 Worker
-api
+ai-assistant
 
 Production API
 https://ai-assistant.carlostcdev.workers.dev

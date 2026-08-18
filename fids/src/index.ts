@@ -1,4 +1,5 @@
 interface Env {AIRLABS_API_KEY: string;}
+interface Airport {name: string;iata_code: string | null;}
 const corsHeaders = {"Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET, OPTIONS", "Access-Control-Allow-Headers": "Content-Type"} satisfies Record<string, string>;
 const jsonHeaders = {...corsHeaders, "Content-Type": "application/json"} satisfies Record<string, string>;
 
@@ -8,10 +9,9 @@ export default {
 		if (request.method !== "GET") return new Response("Method Not Allowed", {status: 405, headers: corsHeaders});
 		if (!env.AIRLABS_API_KEY) return jsonResponse({error: "Falta AIRLABS_API_KEY"}, 500);
 		const url = new URL(request.url);
-
 		if (url.pathname === "/schedules") return await schedules(url, env);
-		if (url.pathname === "/suggest") return await suggest(url, env);
-
+		if (url.pathname === "/airports") return await airports(env);
+		if (url.pathname === "/airport") return await airport(url, env);
 		return new Response("Not Found", {status: 404, headers: corsHeaders});
 	}
 } satisfies ExportedHandler<Env>;
@@ -26,24 +26,29 @@ async function schedules(url: URL, env: Env): Promise<Response> {
 	return await airlabsRequest(apiUrl);
 }
 
-async function suggest(url: URL, env: Env): Promise<Response> {
-	const query = url.searchParams.get("q")?.trim();
-	if (!query) return jsonResponse({error: "Missing q parameter"}, 400);
-	if (query.length < 3) return jsonResponse({error: "Query must contain at least 3 characters"}, 400);
-	const apiUrl = new URL("https://airlabs.co/api/v9/suggest");
+async function airports(env: Env): Promise<Response> {
+	const apiUrl = new URL("https://airlabs.co/api/v9/airports");
 	apiUrl.searchParams.set("api_key", env.AIRLABS_API_KEY);
-	apiUrl.searchParams.set("q", query);
-	apiUrl.searchParams.set("_fields", "name,iata_code,city_code,country_code");
 	const response = await fetch(apiUrl);
 	if (!response.ok) return new Response(response.body, {status: response.status, headers: jsonHeaders});
-	const data = await response.json() as {response?: {airports?: {name: string; iata_code: string | null; city_code: string | null; country_code: string | null}[]}};
-	const airports = (data.response?.airports ?? [])
-		.filter(airport => airport.iata_code)
-		.map(airport => ({
-			name: airport.name, iata_code: airport.iata_code,
-			city_code: airport.city_code, country_code: airport.country_code
-		}));
-	return jsonResponse(airports, 200);
+	const data = await response.json() as Airport[] | {response?: Airport[]};
+	const records = Array.isArray(data) ? data : data.response ?? [];
+	const result = records.filter(airport => airport.iata_code).map(airport => ({iata_code: airport.iata_code, name: airport.name}));
+	return jsonResponse(result, 200);
+}
+
+async function airport(url: URL, env: Env): Promise<Response> {
+	const iata = url.searchParams.get("iata")?.trim().toUpperCase();
+	if (!iata) return jsonResponse({error: "Missing iata parameter"}, 400);
+	const apiUrl = new URL("https://airlabs.co/api/v9/airports");
+	apiUrl.searchParams.set("api_key", env.AIRLABS_API_KEY);
+	apiUrl.searchParams.set("iata_code", iata);
+	const response = await fetch(apiUrl);
+	if (!response.ok) return new Response(response.body, {status: response.status, headers: jsonHeaders});
+	const data = await response.json() as Airport[] | {response?: Airport[]};
+	const records = Array.isArray(data) ? data : data.response ?? [];
+	if (records.length === 0) return jsonResponse({error: "Airport not found"}, 404);
+	return jsonResponse(records[0], 200);
 }
 
 async function airlabsRequest(url: URL): Promise<Response> {

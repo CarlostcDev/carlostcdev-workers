@@ -1,4 +1,4 @@
-# Cloudflare Workers
+# Cloudflare Workers [<img src="docs/cloudflare.svg" width="5%" alt="Cloudflare Workers">](https://dash.cloudflare.com/)
 
 A collection of Cloudflare Workers developed and maintained by Carlos Tormo Castaño.
 
@@ -6,7 +6,7 @@ This repository contains small backend services and APIs used by my personal pro
 
 ## Cloudflare
 
-[<img src="docs/cloudfare-workers.webp" width="100%" alt="Cloudflare Workers">](https://dash.cloudflare.com/)
+[<img src="docs/cloudflare-workers.webp" width="100%" alt="Cloudflare Workers">](https://dash.cloudflare.com/)
 
 ## Workers
 

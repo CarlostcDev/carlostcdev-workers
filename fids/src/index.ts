@@ -1,14 +1,12 @@
 interface Env {AIRLABS_API_KEY: string;}
-interface Airport {name: string;iata_code: string | null;city_code: string | null;}
-interface City {name: string;city_code: string;}
-interface Schedule {airline_iata?: string | null;airline_icao?: string | null;flight_iata?: string | null;flight_icao?: string | null;flight_number?: string | null;dep_iata?: string | null;dep_icao?: string | null;dep_terminal?: string | null;dep_gate?: string | null;dep_time?: string | null;dep_time_utc?: string | null;dep_estimated?: string | null;dep_estimated_utc?: string | null;dep_actual?: string | null;dep_actual_utc?: string | null;arr_iata?: string | null;arr_icao?: string | null;arr_terminal?: string | null;arr_gate?: string | null;arr_baggage?: string | null;arr_time?: string | null;arr_time_utc?: string | null;arr_estimated?: string | null;arr_estimated_utc?: string | null;cs_airline_iata?: string | null;cs_flight_number?: string | null;cs_flight_iata?: string | null;status?: string | null;duration?: number | null;delayed?: number | null;dep_delayed?: number | null;arr_delayed?: number | null;aircraft_icao?: string | null;arr_time_ts?: number | null;dep_time_ts?: number | null;arr_estimated_ts?: number | null;dep_estimated_ts?: number | null;dep_actual_ts?: number | null;codeshares?: string[];}
+interface Airport {name: string;iata_code: string | null;}
+interface Schedule {airline_iata?: string | null;airline_icao?: string | null;flight_iata?: string | null;flight_icao?: string | null;flight_number?: string | null;dep_iata?: string | null;dep_icao?: string | null;dep_terminal?: string | null;dep_gate?: string | null;dep_time?: string | null;dep_time_utc?: string | null;dep_estimated?: string | null;dep_estimated_utc?: string | null;dep_actual?: string | null;dep_actual_utc?: string | null;arr_iata?: string | null;arr_icao?: string | null;arr_terminal?: string | null;arr_gate?: string | null;arr_baggage?: string | null;arr_time?: string | null;arr_time_utc?: string | null;arr_estimated?: string | null;arr_estimated_utc?: string | null;cs_airline_iata?: string | null;cs_flight_number?: string | null;cs_flight_iata?: string | null;status?: string | null;duration?: number | null;delayed?: number | null;dep_delayed?: number | null;arr_delayed?: number | null;aircraft_icao?: string | null;arr_time_ts?: number | null;dep_time_ts?: number | null;arr_estimated_ts?: number | null;dep_actual_ts?: number | null;codeshares?: string[];}
+
 const corsHeaders = {"Access-Control-Allow-Origin": "*","Access-Control-Allow-Methods": "GET, OPTIONS","Access-Control-Allow-Headers": "Content-Type"} satisfies Record<string, string>;
 const jsonHeaders = {...corsHeaders,"Content-Type": "application/json","X-Content-Type-Options": "nosniff"} satisfies Record<string, string>;
+
 const AIRLABS_API = "https://airlabs.co/api/v9";
 const IATA_PATTERN = /^[A-Z]{3}$/;
-const AIRPORTS_CACHE_TTL = 21600;
-const AIRPORT_CACHE_TTL = 3600;
-const SCHEDULE_CACHE_TTL = 60;
 const AIRLABS_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 50;
 const MAX_PAGE = 20;
@@ -18,7 +16,9 @@ export default {
 		if (request.method === "OPTIONS") return new Response(null, {status: 204, headers: corsHeaders});
 		if (request.method !== "GET") return jsonResponse({error: "Method Not Allowed"}, 405);
 		if (!env.AIRLABS_API_KEY) return jsonResponse({error: "Server configuration error"}, 500);
+
 		const url = new URL(request.url);
+
 		try {
 			if (url.pathname === "/docs") return docs();
 			if (url.pathname === "/openapi.json") return openapi();
@@ -38,12 +38,10 @@ async function schedules(url: URL, env: Env): Promise<Response> {
 	const arrIata = normalizeIata(url.searchParams.get("arr_iata"));
 	const page = normalizeInteger(url.searchParams.get("page"), 1, 1, MAX_PAGE);
 	const limit = normalizeInteger(url.searchParams.get("limit"), 20, 1, MAX_PAGE_SIZE);
+
 	if (!depIata && !arrIata) return jsonResponse({error: "Missing dep_iata or arr_iata parameter"}, 400);
 	if (depIata && arrIata) return jsonResponse({error: "Use only dep_iata or arr_iata"}, 400);
-	const cache = caches.default;
-	const cacheKey = new Request(`https://fids-cache.internal/schedules?${url.searchParams.toString()}`);
-	const cached = await cache.match(cacheKey);
-	if (cached) return cached;
+
 	const requiredItems = page * limit;
 	const upstreamPages = Math.ceil(requiredItems / AIRLABS_PAGE_SIZE);
 	const schedulesByKey = new Map<string, Schedule>();
@@ -53,98 +51,90 @@ async function schedules(url: URL, env: Env): Promise<Response> {
 		apiUrl.searchParams.set("api_key", env.AIRLABS_API_KEY);
 		apiUrl.searchParams.set("limit", String(AIRLABS_PAGE_SIZE));
 		apiUrl.searchParams.set("offset", String(currentPage * AIRLABS_PAGE_SIZE));
+
 		if (depIata) apiUrl.searchParams.set("dep_iata", depIata);
 		if (arrIata) apiUrl.searchParams.set("arr_iata", arrIata);
+
 		const response = await fetchAirLabs(apiUrl);
-		if (!response.ok) return await airLabsError(response);
-		const data = await response.json() as {response?: Schedule[];request?: {has_more?: boolean;total_items?: number}};
+		if (!response.ok) return airLabsError(response);
+
+		const data = await response.json() as {response?: Schedule[];request?: {has_more?: boolean}};
 		const records = data.response ?? [];
+
 		for (const record of records) {
 			const key = scheduleKey(record);
 			const existing = schedulesByKey.get(key);
+
 			if (!existing) {
 				schedulesByKey.set(key, normalizeCodeshareRecord(record));
 				continue;
 			}
-			const merged = mergeCodeshares(existing, record);
-			schedulesByKey.set(key, merged);
+
+			schedulesByKey.set(key, mergeCodeshares(existing, record));
 		}
+
 		if (records.length < AIRLABS_PAGE_SIZE || data.request?.has_more === false) break;
 	}
+
 	const allSchedules = [...schedulesByKey.values()].sort(compareSchedules);
 	const total = allSchedules.length;
 	const start = (page - 1) * limit;
 	const items = allSchedules.slice(start, start + limit);
-	const response = jsonResponse({page, limit, total, has_more: start + items.length < total, results: items}, 200, SCHEDULE_CACHE_TTL);
-	await cache.put(cacheKey, response.clone());
-	return response;
+
+	return jsonResponse({page, limit, total, has_more: start + items.length < total, results: items}, 200);
 }
 
 async function airports(env: Env): Promise<Response> {
-	const cache = caches.default;
-	const cacheKey = new Request("https://fids-cache.internal/airports");
-	const cached = await cache.match(cacheKey);
-	if (cached) return cached;
-	const airportsUrl = new URL(`${AIRLABS_API}/airports`);
-	airportsUrl.searchParams.set("api_key", env.AIRLABS_API_KEY);
-	airportsUrl.searchParams.set("_fields", "name,iata_code,city_code");
-	const citiesUrl = new URL(`${AIRLABS_API}/cities`);
-	citiesUrl.searchParams.set("api_key", env.AIRLABS_API_KEY);
-	citiesUrl.searchParams.set("_fields", "name,city_code");
-	const [airportsResponse, citiesResponse] = await Promise.all([fetchAirLabs(airportsUrl),fetchAirLabs(citiesUrl)]);
-	if (!airportsResponse.ok) return await airLabsError(airportsResponse);
-	if (!citiesResponse.ok) return await airLabsError(citiesResponse);
-	const airportsData = await airportsResponse.json() as Airport[] | {response?: Airport[]};
-	const citiesData = await citiesResponse.json() as City[] | {response?: City[]};
-	const airportsRecords = Array.isArray(airportsData) ? airportsData : airportsData.response ?? [];
-	const citiesRecords = Array.isArray(citiesData) ? citiesData : citiesData.response ?? [];
-	const cities = new Map(citiesRecords.map(city => [city.city_code, city.name]));
+	const apiUrl = new URL(`${AIRLABS_API}/airports`);
+	apiUrl.searchParams.set("api_key", env.AIRLABS_API_KEY);
 
-	const result = airportsRecords
-		.filter(airport => airport.iata_code)
-		.map(airport => ({
-			iata_code: airport.iata_code,
-			name: airport.name,
-			city: airport.city_code ? cities.get(airport.city_code) ?? null : null
-		}));
+	const response = await fetchAirLabs(apiUrl);
+	if (!response.ok) return airLabsError(response);
 
-	const response = jsonResponse(result, 200, AIRPORTS_CACHE_TTL);
-	await cache.put(cacheKey, response.clone());
-	return response;
+	const data = await response.json() as Airport[] | {response?: Airport[]};
+	const records = Array.isArray(data) ? data : data.response ?? [];
+
+	return jsonResponse(records.filter(airport => airport.iata_code).map(airport => ({
+		iata_code: airport.iata_code,
+		name: airport.name
+	})), 200);
 }
 
 async function airport(url: URL, env: Env): Promise<Response> {
 	const iata = normalizeIata(url.searchParams.get("iata"));
+
 	if (!iata) return jsonResponse({error: "Invalid or missing IATA code"}, 400);
-	const cache = caches.default;
-	const cacheKey = new Request(`https://fids-cache.internal/airport/${iata}`);
-	const cached = await cache.match(cacheKey);
-	if (cached) return cached;
+
 	const apiUrl = new URL(`${AIRLABS_API}/airports`);
 	apiUrl.searchParams.set("api_key", env.AIRLABS_API_KEY);
 	apiUrl.searchParams.set("iata_code", iata);
+
 	const response = await fetchAirLabs(apiUrl);
-	if (!response.ok) return await airLabsError(response);
+	if (!response.ok) return airLabsError(response);
+
 	const data = await response.json() as Airport[] | {response?: Airport[]};
 	const records = Array.isArray(data) ? data : data.response ?? [];
+
 	if (records.length === 0) return jsonResponse({error: "Airport not found"}, 404);
-	const result = jsonResponse(records[0], 200, AIRPORT_CACHE_TTL);
-	await cache.put(cacheKey, result.clone());
-	return result;
+
+	return jsonResponse(records[0], 200);
 }
 
 async function fetchAirLabs(url: URL): Promise<Response> {
 	try {
 		return await fetch(url, {signal: AbortSignal.timeout(10000)});
 	} catch {
-		return new Response(JSON.stringify({error: "AirLabs request failed"}), {status: 502});
+		return new Response(JSON.stringify({error: "AirLabs request failed"}), {status: 502, headers: jsonHeaders});
 	}
 }
 
 async function airLabsError(response: Response): Promise<Response> {
 	let details: unknown = null;
-	try {details = await response.json();
+
+	try {
+		details = await response.json();
 	} catch {}
+
 	return jsonResponse({error: "AirLabs API error",status: response.status,details}, response.status);
 }
 
@@ -169,8 +159,10 @@ function scheduleKey(schedule: Schedule): string {
 
 function normalizeCodeshareRecord(schedule: Schedule): Schedule {
 	const codeshares = new Set<string>();
+
 	if (schedule.flight_iata) codeshares.add(schedule.flight_iata);
 	if (schedule.cs_flight_iata) codeshares.add(schedule.cs_flight_iata);
+
 	return {...schedule,codeshares: [...codeshares]};
 }
 
@@ -179,10 +171,12 @@ function mergeCodeshares(existing: Schedule, incoming: Schedule): Schedule {
 	const incomingOperating = !incoming.cs_flight_iata;
 	const base = existingOperating ? existing : incomingOperating ? incoming : existing;
 	const codeshares = new Set<string>(base.codeshares ?? []);
+
 	if (existing.flight_iata) codeshares.add(existing.flight_iata);
 	if (existing.cs_flight_iata) codeshares.add(existing.cs_flight_iata);
 	if (incoming.flight_iata) codeshares.add(incoming.flight_iata);
 	if (incoming.cs_flight_iata) codeshares.add(incoming.cs_flight_iata);
+
 	return {...base,codeshares: [...codeshares]};
 }
 
@@ -192,10 +186,8 @@ function compareSchedules(a: Schedule, b: Schedule): number {
 	return aTime - bTime;
 }
 
-function jsonResponse(body: unknown, status: number, cacheTtl?: number): Response {
-	const headers = new Headers(jsonHeaders);
-	if (cacheTtl !== undefined) headers.set("Cache-Control", `public, max-age=${cacheTtl}`);
-	return new Response(JSON.stringify(body), {status, headers});
+function jsonResponse(body: unknown, status: number): Response {
+	return new Response(JSON.stringify(body), {status, headers: jsonHeaders});
 }
 
 function docs(): Response {
@@ -222,13 +214,13 @@ function docs(): Response {
 		};
 	</script>
 </body>
-</html>`, {status: 200, headers: {"Content-Type": "text/html; charset=utf-8", "X-Content-Type-Options": "nosniff"}});
+</html>`, {status: 200, headers: {"Content-Type": "text/html; charset=utf-8","X-Content-Type-Options": "nosniff"}});
 }
 
 function openapi(): Response {
 	return jsonResponse({
 		openapi: "3.0.3",
-		info: {title: "FIDS API", description: "API for the Flight Information Display System.", version: "1.0.0"},
+		info: {title: "FIDS API",description: "API for the Flight Information Display System.",version: "1.0.0"},
 		servers: [{url: "https://fids.carlostcdev.workers.dev"}],
 		paths: {
 			"/airports": {
@@ -239,7 +231,7 @@ function openapi(): Response {
 					responses: {
 						"200": {
 							description: "List of airports",
-							content: {"application/json": {schema: {type: "array", items: {$ref: "#/components/schemas/Airport"}}}}
+							content: {"application/json": {schema: {type: "array",items: {$ref: "#/components/schemas/Airport"}}}}
 						}
 					}
 				}
@@ -254,7 +246,7 @@ function openapi(): Response {
 						in: "query",
 						required: true,
 						description: "Three-letter IATA airport code.",
-						schema: {type: "string", pattern: "^[A-Za-z]{3}$", example: "MAD"}
+						schema: {type: "string",pattern: "^[A-Za-z]{3}$",example: "MAD"}
 					}],
 					responses: {
 						"200": {description: "Airport information"},
@@ -269,10 +261,10 @@ function openapi(): Response {
 					description: "Returns paginated departures or arrivals for an airport.",
 					operationId: "getSchedules",
 					parameters: [
-						{name: "dep_iata", in: "query", required: false, description: "Departure airport IATA code.", schema: {type: "string", pattern: "^[A-Za-z]{3}$", example: "MAD"}},
-						{name: "arr_iata", in: "query", required: false, description: "Arrival airport IATA code.", schema: {type: "string", pattern: "^[A-Za-z]{3}$", example: "MAD"}},
-						{name: "page", in: "query", required: false, description: "Page number.", schema: {type: "integer", minimum: 1, default: 1}},
-						{name: "limit", in: "query", required: false, description: "Number of results per page.", schema: {type: "integer", minimum: 1, maximum: 50, default: 20}}
+						{name: "dep_iata",in: "query",required: false,description: "Departure airport IATA code.",schema: {type: "string",pattern: "^[A-Za-z]{3}$",example: "MAD"}},
+						{name: "arr_iata",in: "query",required: false,description: "Arrival airport IATA code.",schema: {type: "string",pattern: "^[A-Za-z]{3}$",example: "MAD"}},
+						{name: "page",in: "query",required: false,description: "Page number.",schema: {type: "integer",minimum: 1,default: 1}},
+						{name: "limit",in: "query",required: false,description: "Number of results per page.",schema: {type: "integer",minimum: 1,maximum: 50,default: 20}}
 					],
 					responses: {
 						"200": {description: "Paginated schedules"},
@@ -286,9 +278,8 @@ function openapi(): Response {
 				Airport: {
 					type: "object",
 					properties: {
-						iata_code: {type: "string", example: "MAD"},
-						name: {type: "string", example: "Adolfo Suarez Madrid-Barajas Airport"},
-						city: {type: "string", nullable: true, example: "Madrid"}
+						iata_code: {type: "string",example: "MAD"},
+						name: {type: "string",example: "Adolfo Suarez Madrid-Barajas Airport"}
 					}
 				}
 			}

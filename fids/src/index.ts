@@ -33,13 +33,16 @@ async function schedules(url: URL, env: Env): Promise<Response> {
 	if (depIata && arrIata) return jsonResponse({error: "Use only dep_iata or arr_iata"}, 400);
 
 	const airportIata = depIata ?? arrIata!;
+	const timeZone = await getAirportTimeZone(airportIata, env);
+	if (!timeZone) return jsonResponse({error: "Unable to determine airport time zone"}, 502);
+
 	const now = new Date();
-	const fromLocal = formatLocalDate(now);
-	const toLocal = formatLocalDate(new Date(now.getTime() + 12 * 60 * 60 * 1000));
+	const fromLocal = formatLocalDate(now, timeZone);
+	const toLocal = formatLocalDate(new Date(now.getTime() + 12 * 60 * 60 * 1000), timeZone);
 
 	const apiUrl = new URL(`${AERODATABOX_API}/flights/airports/iata/${airportIata}/${fromLocal}/${toLocal}`);
 	apiUrl.searchParams.set("withLeg", "true");
-	apiUrl.searchParams.set("direction", "Both");
+	apiUrl.searchParams.set("direction", depIata ? "Departure" : "Arrival");
 	apiUrl.searchParams.set("withCancelled", "true");
 	apiUrl.searchParams.set("withCodeshared", "true");
 	apiUrl.searchParams.set("withCargo", "true");
@@ -48,8 +51,71 @@ async function schedules(url: URL, env: Env): Promise<Response> {
 
 	const response = await fetchAeroDataBox(apiUrl, env);
 	if (!response.ok) return aeroDataBoxError(response);
-	const data = await response.json();
+
+	const data = await response.json() as {departures?: Flight[]; arrivals?: Flight[]};
+	const flights = depIata ? filterCodeshares(data.departures ?? []) : filterCodeshares(data.arrivals ?? []);
+
+	if (depIata) data.departures = flights;
+	if (arrIata) data.arrivals = flights;
+
 	return jsonResponse(data, 200);
+}
+
+async function getAirportTimeZone(iata: string, env: Env): Promise<string | null> {
+	const apiUrl = new URL(`${AERODATABOX_API}/airports/iata/${iata}`);
+	const response = await fetchAeroDataBox(apiUrl, env);
+	if (!response.ok) return null;
+	const data = await response.json() as {timeZone?: string};
+	return data.timeZone ?? null;
+}
+
+interface Flight {
+	departure?: {
+		scheduledTime?: {
+			utc?: string;
+			local?: string;
+		};
+		revisedTime?: {
+			utc?: string;
+			local?: string;
+		};
+	};
+	arrival?: {
+		scheduledTime?: {
+			utc?: string;
+			local?: string;
+		};
+		revisedTime?: {
+			utc?: string;
+			local?: string;
+		};
+	};
+	number?: string;
+	status?: string;
+	codeshareStatus?: string;
+	airline?: {
+		iata?: string;
+		icao?: string;
+	};
+}
+
+function filterCodeshares(flights: Flight[]): Flight[] {
+	const seen = new Set<string>();
+
+	return flights.filter(flight => {
+		if (flight.codeshareStatus === "IsCodeshared") return false;
+
+		const key = [
+			flight.departure?.scheduledTime?.utc ?? flight.departure?.revisedTime?.utc ?? "",
+			flight.arrival?.scheduledTime?.utc ?? flight.arrival?.revisedTime?.utc ?? "",
+			flight.airline?.icao ?? "",
+			flight.airline?.iata ?? ""
+		].join("|");
+
+		if (seen.has(key)) return false;
+		seen.add(key);
+		return true;
+	});
 }
 
 async function airports(env: Env): Promise<Response> {
@@ -115,13 +181,19 @@ function normalizeIata(value: string | null): string | null {
 	return IATA_PATTERN.test(iata) ? iata : null;
 }
 
-function formatLocalDate(date: Date): string {
-	const year = date.getFullYear();
-	const month = String(date.getMonth() + 1).padStart(2, "0");
-	const day = String(date.getDate()).padStart(2, "0");
-	const hours = String(date.getHours()).padStart(2, "0");
-	const minutes = String(date.getMinutes()).padStart(2, "0");
-	return `${year}-${month}-${day}T${hours}:${minutes}`;
+function formatLocalDate(date: Date, timeZone: string): string {
+	const parts = new Intl.DateTimeFormat("en-CA", {
+		timeZone,
+		year: "numeric",
+		month: "2-digit",
+		day: "2-digit",
+		hour: "2-digit",
+		minute: "2-digit",
+		hourCycle: "h23"
+	}).formatToParts(date);
+
+	const values = Object.fromEntries(parts.map(part => [part.type, part.value]));
+	return `${values.year}-${values.month}-${values.day}T${values.hour}:${values.minute}`;
 }
 
 function jsonResponse(body: unknown, status: number): Response {

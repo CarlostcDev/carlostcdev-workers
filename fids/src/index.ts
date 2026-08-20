@@ -33,14 +33,9 @@ async function schedules(url: URL, env: Env): Promise<Response> {
 	if (depIata && arrIata) return jsonResponse({error: "Use only dep_iata or arr_iata"}, 400);
 
 	const airportIata = depIata ?? arrIata!;
-	const timeZone = await getAirportTimeZone(airportIata, env);
-	if (!timeZone) return jsonResponse({error: "Unable to determine airport time zone"}, 502);
-
-	const now = new Date();
-	const fromLocal = formatLocalDate(now, timeZone);
-	const toLocal = formatLocalDate(new Date(now.getTime() + 12 * 60 * 60 * 1000), timeZone);
-
-	const apiUrl = new URL(`${AERODATABOX_API}/flights/airports/iata/${airportIata}/${fromLocal}/${toLocal}`);
+	const apiUrl = new URL(`${AERODATABOX_API}/flights/airports/iata/${airportIata}`);
+	apiUrl.searchParams.set("offsetMinutes", "0");
+	apiUrl.searchParams.set("durationMinutes", "720");
 	apiUrl.searchParams.set("withLeg", "true");
 	apiUrl.searchParams.set("direction", depIata ? "Departure" : "Arrival");
 	apiUrl.searchParams.set("withCancelled", "true");
@@ -53,20 +48,11 @@ async function schedules(url: URL, env: Env): Promise<Response> {
 	if (!response.ok) return aeroDataBoxError(response);
 
 	const data = await response.json() as {departures?: Flight[]; arrivals?: Flight[]};
-	const flights = depIata ? filterCodeshares(data.departures ?? []) : filterCodeshares(data.arrivals ?? []);
 
-	if (depIata) data.departures = flights;
-	if (arrIata) data.arrivals = flights;
+	if (depIata) data.departures = filterCodeshares(data.departures ?? []);
+	if (arrIata) data.arrivals = filterCodeshares(data.arrivals ?? []);
 
 	return jsonResponse(data, 200);
-}
-
-async function getAirportTimeZone(iata: string, env: Env): Promise<string | null> {
-	const apiUrl = new URL(`${AERODATABOX_API}/airports/iata/${iata}`);
-	const response = await fetchAeroDataBox(apiUrl, env);
-	if (!response.ok) return null;
-	const data = await response.json() as {timeZone?: string};
-	return data.timeZone ?? null;
 }
 
 interface Flight {
@@ -103,13 +89,9 @@ function filterCodeshares(flights: Flight[]): Flight[] {
 	const seen = new Set<string>();
 
 	return flights.filter(flight => {
-		if (flight.codeshareStatus === "IsCodeshared") return false;
-
 		const key = [
 			flight.departure?.scheduledTime?.utc ?? flight.departure?.revisedTime?.utc ?? "",
-			flight.arrival?.scheduledTime?.utc ?? flight.arrival?.revisedTime?.utc ?? "",
-			flight.airline?.icao ?? "",
-			flight.airline?.iata ?? ""
+			flight.arrival?.scheduledTime?.utc ?? flight.arrival?.revisedTime?.utc ?? ""
 		].join("|");
 
 		if (seen.has(key)) return false;
@@ -179,21 +161,6 @@ async function aeroDataBoxError(response: Response): Promise<Response> {
 function normalizeIata(value: string | null): string | null {
 	const iata = value?.trim().toUpperCase() ?? "";
 	return IATA_PATTERN.test(iata) ? iata : null;
-}
-
-function formatLocalDate(date: Date, timeZone: string): string {
-	const parts = new Intl.DateTimeFormat("en-CA", {
-		timeZone,
-		year: "numeric",
-		month: "2-digit",
-		day: "2-digit",
-		hour: "2-digit",
-		minute: "2-digit",
-		hourCycle: "h23"
-	}).formatToParts(date);
-
-	const values = Object.fromEntries(parts.map(part => [part.type, part.value]));
-	return `${values.year}-${values.month}-${values.day}T${values.hour}:${values.minute}`;
 }
 
 function jsonResponse(body: unknown, status: number): Response {
@@ -279,7 +246,7 @@ function openapi(): Response {
 			"/schedules": {
 				get: {
 					summary: "Get flight schedules",
-					description: "Returns departures and arrivals from AeroDataBox for a 12-hour time range starting from the current local time.",
+					description: "Returns departures and arrivals from AeroDataBox using a relative 12-hour time range starting from the current time.",
 					operationId: "getSchedules",
 					parameters: [
 						{name: "dep_iata",in: "query",required: false,description: "Departure airport IATA code.",schema: {type: "string",pattern: "^[A-Za-z]{3}$",example: "MAD"}},

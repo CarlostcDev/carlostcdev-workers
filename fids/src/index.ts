@@ -1,16 +1,16 @@
-import {Schedule} from "./interfaces/schedule";
 import {Airport} from "./interfaces/airport";
-interface Env {AIRLABS_API_KEY: string;}
+interface Env {AIRLABS_API_KEY: string; RAPIDAPI_KEY: string;}
 const corsHeaders = {"Access-Control-Allow-Origin": "*","Access-Control-Allow-Methods": "GET, OPTIONS","Access-Control-Allow-Headers": "Content-Type"} satisfies Record<string, string>;
 const jsonHeaders = {...corsHeaders,"Content-Type": "application/json","X-Content-Type-Options": "nosniff"} satisfies Record<string, string>;
 const AIRLABS_API = "https://airlabs.co/api/v9";
+const AERODATABOX_API = "https://aerodatabox.p.rapidapi.com";
 const IATA_PATTERN = /^[A-Z]{3}$/;
 
 export default {
 	async fetch(request: Request, env: Env): Promise<Response> {
 		if (request.method === "OPTIONS") return new Response(null, {status: 204, headers: corsHeaders});
 		if (request.method !== "GET") return jsonResponse({error: "Method Not Allowed"}, 405);
-		if (!env.AIRLABS_API_KEY) return jsonResponse({error: "Server configuration error"}, 500);
+		if (!env.AIRLABS_API_KEY || !env.RAPIDAPI_KEY) return jsonResponse({error: "Server configuration error"}, 500);
 		const url = new URL(request.url);
 
 		try {
@@ -31,47 +31,25 @@ async function schedules(url: URL, env: Env): Promise<Response> {
 	const arrIata = normalizeIata(url.searchParams.get("arr_iata"));
 	if (!depIata && !arrIata) return jsonResponse({error: "Missing dep_iata or arr_iata parameter"}, 400);
 	if (depIata && arrIata) return jsonResponse({error: "Use only dep_iata or arr_iata"}, 400);
-	const limit = 50;
-	const maxResults = 50;
-	const now = Math.floor(Date.now() / 1000);
-	const isArrival = !!arrIata;
-	const schedulesByKey = new Map<string, Schedule>();
-	const apiUrl = new URL(`${AIRLABS_API}/schedules`);
-	apiUrl.searchParams.set("api_key", env.AIRLABS_API_KEY);
-	apiUrl.searchParams.set("limit", String(limit));
-	if (depIata) apiUrl.searchParams.set("dep_iata", depIata);
-	if (arrIata) apiUrl.searchParams.set("arr_iata", arrIata);
-	const response = await fetchAirLabs(apiUrl);
-	if (!response.ok) return airLabsError(response);
-	const data = await response.json() as Schedule[] | {response?: Schedule[]};
-	const records = Array.isArray(data) ? data : data.response ?? [];
-	const airlineIatas = [...new Set(records.map(record => record.airline_iata).filter((iata): iata is string => !!iata))].slice(0, 49);
-	for (const airlineIata of airlineIatas) {
-		const airlineApiUrl = new URL(`${AIRLABS_API}/schedules`);
-		airlineApiUrl.searchParams.set("api_key", env.AIRLABS_API_KEY);
-		airlineApiUrl.searchParams.set("limit", String(limit));
-		airlineApiUrl.searchParams.set("airline_iata", airlineIata);
-		if (depIata) airlineApiUrl.searchParams.set("dep_iata", depIata);
-		if (arrIata) airlineApiUrl.searchParams.set("arr_iata", arrIata);
-		const airlineResponse = await fetchAirLabs(airlineApiUrl);
-		if (!airlineResponse.ok) return airLabsError(airlineResponse);
-		const airlineData = await airlineResponse.json() as Schedule[] | {response?: Schedule[]};
-		const airlineRecords = Array.isArray(airlineData) ? airlineData : airlineData.response ?? [];
-		for (const record of airlineRecords) {
-			if (record.status === "landed" || record.status === "cancelled") continue;
-			if (!isArrival && (record.dep_actual_ts || record.status === "active")) continue;
-			const scheduledTime = scheduleTime(record, isArrival);
-			if (!scheduledTime || scheduledTime < now) continue;
-			const key = scheduleKey(record);
-			const existing = schedulesByKey.get(key);
-			if (!existing) schedulesByKey.set(key, normalizeCodeshareRecord(record));
-			else schedulesByKey.set(key, mergeCodeshares(existing, record));
-			if (schedulesByKey.size >= maxResults) break;
-		}
-	}
 
-	const schedules = [...schedulesByKey.values()].sort((a, b) => compareSchedules(a, b, isArrival)).slice(0, maxResults);
-	return jsonResponse(schedules, 200);
+	const airportIata = depIata ?? arrIata!;
+	const now = new Date();
+	const fromLocal = formatLocalDate(now);
+	const toLocal = formatLocalDate(new Date(now.getTime() + 12 * 60 * 60 * 1000));
+
+	const apiUrl = new URL(`${AERODATABOX_API}/flights/airports/iata/${airportIata}/${fromLocal}/${toLocal}`);
+	apiUrl.searchParams.set("withLeg", "true");
+	apiUrl.searchParams.set("direction", "Both");
+	apiUrl.searchParams.set("withCancelled", "true");
+	apiUrl.searchParams.set("withCodeshared", "true");
+	apiUrl.searchParams.set("withCargo", "true");
+	apiUrl.searchParams.set("withPrivate", "true");
+	apiUrl.searchParams.set("withLocation", "false");
+
+	const response = await fetchAeroDataBox(apiUrl, env);
+	if (!response.ok) return aeroDataBoxError(response);
+	const data = await response.json();
+	return jsonResponse(data, 200);
 }
 
 async function airports(env: Env): Promise<Response> {
@@ -106,10 +84,30 @@ async function fetchAirLabs(url: URL): Promise<Response> {
 	}
 }
 
+async function fetchAeroDataBox(url: URL, env: Env): Promise<Response> {
+	try {
+		return await fetch(url, {
+			headers: {
+				"X-RapidAPI-Key": env.RAPIDAPI_KEY,
+				"X-RapidAPI-Host": "aerodatabox.p.rapidapi.com"
+			},
+			signal: AbortSignal.timeout(10000)
+		});
+	} catch {
+		return new Response(JSON.stringify({error: "AeroDataBox request failed"}), {status: 502, headers: jsonHeaders});
+	}
+}
+
 async function airLabsError(response: Response): Promise<Response> {
 	let details: unknown = null;
 	try {details = await response.json();} catch {}
 	return jsonResponse({error: "AirLabs API error", status: response.status, details}, response.status);
+}
+
+async function aeroDataBoxError(response: Response): Promise<Response> {
+	let details: unknown = null;
+	try {details = await response.json();} catch {}
+	return jsonResponse({error: "AeroDataBox API error", status: response.status, details}, response.status);
 }
 
 function normalizeIata(value: string | null): string | null {
@@ -117,42 +115,13 @@ function normalizeIata(value: string | null): string | null {
 	return IATA_PATTERN.test(iata) ? iata : null;
 }
 
-function scheduleKey(schedule: Schedule): string {
-	const operatingFlight = schedule.cs_flight_iata || schedule.flight_iata || "";
-	const dep = schedule.dep_iata || "";
-	const arr = schedule.arr_iata || "";
-	const time = schedule.dep_time_ts ?? schedule.dep_time ?? "";
-
-	return `${dep}|${arr}|${time}|${operatingFlight}`;
-}
-
-function normalizeCodeshareRecord(schedule: Schedule): Schedule {
-	const codeshares = new Set<string>();
-	if (schedule.flight_iata) codeshares.add(schedule.flight_iata);
-	if (schedule.cs_flight_iata) codeshares.add(schedule.cs_flight_iata);
-	return {...schedule,codeshares: [...codeshares]};
-}
-
-function mergeCodeshares(existing: Schedule, incoming: Schedule): Schedule {
-	const existingOperating = !existing.cs_flight_iata;
-	const incomingOperating = !incoming.cs_flight_iata;
-	const base = existingOperating ? existing : incomingOperating ? incoming : existing;
-	const codeshares = new Set<string>(base.codeshares ?? []);
-	if (existing.flight_iata) codeshares.add(existing.flight_iata);
-	if (existing.cs_flight_iata) codeshares.add(existing.cs_flight_iata);
-	if (incoming.flight_iata) codeshares.add(incoming.flight_iata);
-	if (incoming.cs_flight_iata) codeshares.add(incoming.cs_flight_iata);
-	return {...base,codeshares: [...codeshares]};
-}
-
-function scheduleTime(schedule: Schedule, isArrival: boolean): number | null | undefined {
-	return isArrival ? schedule.arr_estimated_ts ?? schedule.arr_time_ts : schedule.dep_estimated_ts ?? schedule.dep_time_ts;
-}
-
-function compareSchedules(a: Schedule, b: Schedule, isArrival: boolean): number {
-	const aTime = scheduleTime(a, isArrival) ?? Number.MAX_SAFE_INTEGER;
-	const bTime = scheduleTime(b, isArrival) ?? Number.MAX_SAFE_INTEGER;
-	return aTime - bTime;
+function formatLocalDate(date: Date): string {
+	const year = date.getFullYear();
+	const month = String(date.getMonth() + 1).padStart(2, "0");
+	const day = String(date.getDate()).padStart(2, "0");
+	const hours = String(date.getHours()).padStart(2, "0");
+	const minutes = String(date.getMinutes()).padStart(2, "0");
+	return `${year}-${month}-${day}T${hours}:${minutes}`;
 }
 
 function jsonResponse(body: unknown, status: number): Response {
@@ -172,15 +141,15 @@ function docs(): Response {
     <div id="swagger-ui"></div>
     <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
     <script>
-       window.onload = () => {
-          SwaggerUIBundle({
-             url: "/openapi.json",
-             dom_id: "#swagger-ui",
-             deepLinking: true,
-             presets: [SwaggerUIBundle.presets.apis],
-             layout: "BaseLayout"
-          });
-       };
+        window.onload = () => {
+            SwaggerUIBundle({
+                url: "/openapi.json",
+                dom_id: "#swagger-ui",
+                deepLinking: true,
+                presets: [SwaggerUIBundle.presets.apis],
+                layout: "BaseLayout"
+            });
+        };
     </script>
 </body>
 </html>`, {status: 200, headers: {"Content-Type": "text/html; charset=utf-8","X-Content-Type-Options": "nosniff"}});
@@ -238,14 +207,14 @@ function openapi(): Response {
 			"/schedules": {
 				get: {
 					summary: "Get flight schedules",
-					description: "Returns departures or arrivals ordered by departure time.",
+					description: "Returns departures and arrivals from AeroDataBox for a 12-hour time range starting from the current local time.",
 					operationId: "getSchedules",
 					parameters: [
 						{name: "dep_iata",in: "query",required: false,description: "Departure airport IATA code.",schema: {type: "string",pattern: "^[A-Za-z]{3}$",example: "MAD"}},
 						{name: "arr_iata",in: "query",required: false,description: "Arrival airport IATA code.",schema: {type: "string",pattern: "^[A-Za-z]{3}$",example: "MAD"}}
 					],
 					responses: {
-						"200": {description: "Flight schedules"},
+						"200": {description: "AeroDataBox flight schedules"},
 						"400": {description: "Invalid parameters"}
 					}
 				}

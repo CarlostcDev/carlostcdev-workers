@@ -34,33 +34,43 @@ async function schedules(url: URL, env: Env): Promise<Response> {
 	const limit = 50;
 	const maxResults = 50;
 	const now = Math.floor(Date.now() / 1000);
+	const isArrival = !!arrIata;
 	const schedulesByKey = new Map<string, Schedule>();
-	for (let offset = 0; offset < 1000 && schedulesByKey.size < maxResults; offset += limit) {
-		const apiUrl = new URL(`${AIRLABS_API}/schedules`);
-		apiUrl.searchParams.set("api_key", env.AIRLABS_API_KEY);
-		apiUrl.searchParams.set("limit", String(limit));
-		apiUrl.searchParams.set("offset", String(offset));
-		if (depIata) apiUrl.searchParams.set("dep_iata", depIata);
-		if (arrIata) apiUrl.searchParams.set("arr_iata", arrIata);
-		const response = await fetchAirLabs(apiUrl);
-		if (!response.ok) return airLabsError(response);
-		const data = await response.json() as Schedule[] | {response?: Schedule[]};
-		const records = Array.isArray(data) ? data : data.response ?? [];
-		for (const record of records) {
-			if (record.dep_actual_ts) continue;
-			if (record.status === "active" || record.status === "landed" || record.status === "cancelled") continue;
-			const departureTime = record.dep_estimated_ts ?? record.dep_time_ts ?? Number.MAX_SAFE_INTEGER;
-			if (departureTime < now) continue;
+	const apiUrl = new URL(`${AIRLABS_API}/schedules`);
+	apiUrl.searchParams.set("api_key", env.AIRLABS_API_KEY);
+	apiUrl.searchParams.set("limit", String(limit));
+	if (depIata) apiUrl.searchParams.set("dep_iata", depIata);
+	if (arrIata) apiUrl.searchParams.set("arr_iata", arrIata);
+	const response = await fetchAirLabs(apiUrl);
+	if (!response.ok) return airLabsError(response);
+	const data = await response.json() as Schedule[] | {response?: Schedule[]};
+	const records = Array.isArray(data) ? data : data.response ?? [];
+	const airlineIatas = [...new Set(records.map(record => record.airline_iata).filter((iata): iata is string => !!iata))].slice(0, 49);
+	for (const airlineIata of airlineIatas) {
+		const airlineApiUrl = new URL(`${AIRLABS_API}/schedules`);
+		airlineApiUrl.searchParams.set("api_key", env.AIRLABS_API_KEY);
+		airlineApiUrl.searchParams.set("limit", String(limit));
+		airlineApiUrl.searchParams.set("airline_iata", airlineIata);
+		if (depIata) airlineApiUrl.searchParams.set("dep_iata", depIata);
+		if (arrIata) airlineApiUrl.searchParams.set("arr_iata", arrIata);
+		const airlineResponse = await fetchAirLabs(airlineApiUrl);
+		if (!airlineResponse.ok) return airLabsError(airlineResponse);
+		const airlineData = await airlineResponse.json() as Schedule[] | {response?: Schedule[]};
+		const airlineRecords = Array.isArray(airlineData) ? airlineData : airlineData.response ?? [];
+		for (const record of airlineRecords) {
+			if (record.status === "landed" || record.status === "cancelled") continue;
+			if (!isArrival && (record.dep_actual_ts || record.status === "active")) continue;
+			const scheduledTime = scheduleTime(record, isArrival);
+			if (!scheduledTime || scheduledTime < now) continue;
 			const key = scheduleKey(record);
 			const existing = schedulesByKey.get(key);
 			if (!existing) schedulesByKey.set(key, normalizeCodeshareRecord(record));
 			else schedulesByKey.set(key, mergeCodeshares(existing, record));
 			if (schedulesByKey.size >= maxResults) break;
 		}
-		if (records.length < limit) break;
 	}
 
-	const schedules = [...schedulesByKey.values()].sort(compareSchedules).slice(0, maxResults);
+	const schedules = [...schedulesByKey.values()].sort((a, b) => compareSchedules(a, b, isArrival)).slice(0, maxResults);
 	return jsonResponse(schedules, 200);
 }
 
@@ -135,9 +145,13 @@ function mergeCodeshares(existing: Schedule, incoming: Schedule): Schedule {
 	return {...base,codeshares: [...codeshares]};
 }
 
-function compareSchedules(a: Schedule, b: Schedule): number {
-	const aTime = a.dep_estimated_ts ?? a.dep_time_ts ?? Number.MAX_SAFE_INTEGER;
-	const bTime = b.dep_estimated_ts ?? b.dep_time_ts ?? Number.MAX_SAFE_INTEGER;
+function scheduleTime(schedule: Schedule, isArrival: boolean): number | null | undefined {
+	return isArrival ? schedule.arr_estimated_ts ?? schedule.arr_time_ts : schedule.dep_estimated_ts ?? schedule.dep_time_ts;
+}
+
+function compareSchedules(a: Schedule, b: Schedule, isArrival: boolean): number {
+	const aTime = scheduleTime(a, isArrival) ?? Number.MAX_SAFE_INTEGER;
+	const bTime = scheduleTime(b, isArrival) ?? Number.MAX_SAFE_INTEGER;
 	return aTime - bTime;
 }
 

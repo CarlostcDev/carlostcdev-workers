@@ -31,23 +31,36 @@ async function schedules(url: URL, env: Env): Promise<Response> {
 	const arrIata = normalizeIata(url.searchParams.get("arr_iata"));
 	if (!depIata && !arrIata) return jsonResponse({error: "Missing dep_iata or arr_iata parameter"}, 400);
 	if (depIata && arrIata) return jsonResponse({error: "Use only dep_iata or arr_iata"}, 400);
-	const apiUrl = new URL(`${AIRLABS_API}/schedules`);
-	apiUrl.searchParams.set("api_key", env.AIRLABS_API_KEY);
-	apiUrl.searchParams.set("limit", "50");
-	if (depIata) apiUrl.searchParams.set("dep_iata", depIata);
-	if (arrIata) apiUrl.searchParams.set("arr_iata", arrIata);
-	const response = await fetchAirLabs(apiUrl);
-	if (!response.ok) return airLabsError(response);
-	const data = await response.json() as {response?: Schedule[]};
-	const records = data.response ?? [];
+	const limit = 50;
+	const maxResults = 50;
+	const now = Math.floor(Date.now() / 1000);
 	const schedulesByKey = new Map<string, Schedule>();
-	for (const record of records) {
-		const key = scheduleKey(record);
-		const existing = schedulesByKey.get(key);
-		if (!existing) schedulesByKey.set(key, normalizeCodeshareRecord(record));
-		else schedulesByKey.set(key, mergeCodeshares(existing, record));
+	for (let offset = 0; offset < 1000 && schedulesByKey.size < maxResults; offset += limit) {
+		const apiUrl = new URL(`${AIRLABS_API}/schedules`);
+		apiUrl.searchParams.set("api_key", env.AIRLABS_API_KEY);
+		apiUrl.searchParams.set("limit", String(limit));
+		apiUrl.searchParams.set("offset", String(offset));
+		if (depIata) apiUrl.searchParams.set("dep_iata", depIata);
+		if (arrIata) apiUrl.searchParams.set("arr_iata", arrIata);
+		const response = await fetchAirLabs(apiUrl);
+		if (!response.ok) return airLabsError(response);
+		const data = await response.json() as Schedule[] | {response?: Schedule[]};
+		const records = Array.isArray(data) ? data : data.response ?? [];
+		for (const record of records) {
+			if (record.dep_actual_ts) continue;
+			if (record.status === "active" || record.status === "landed" || record.status === "cancelled") continue;
+			const departureTime = record.dep_estimated_ts ?? record.dep_time_ts ?? Number.MAX_SAFE_INTEGER;
+			if (departureTime < now) continue;
+			const key = scheduleKey(record);
+			const existing = schedulesByKey.get(key);
+			if (!existing) schedulesByKey.set(key, normalizeCodeshareRecord(record));
+			else schedulesByKey.set(key, mergeCodeshares(existing, record));
+			if (schedulesByKey.size >= maxResults) break;
+		}
+		if (records.length < limit) break;
 	}
-	const schedules = [...schedulesByKey.values()].sort(compareSchedules);
+
+	const schedules = [...schedulesByKey.values()].sort(compareSchedules).slice(0, maxResults);
 	return jsonResponse(schedules, 200);
 }
 

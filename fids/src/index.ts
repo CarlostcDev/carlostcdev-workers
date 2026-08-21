@@ -15,7 +15,7 @@ export default {
 
 		try {
 			if (url.pathname === "/docs") return docs();
-			if (url.pathname === "/openapi.json") return openapi();
+			if (url.pathname === "/openapi.json") return openapi(url);
 			if (url.pathname === "/schedules") return await schedules(url, env);
 			if (url.pathname === "/airports") return await airports(env);
 			if (url.pathname === "/airport") return await airport(url, env);
@@ -194,7 +194,7 @@ function docs(): Response {
 </html>`, {status: 200, headers: {"Content-Type": "text/html; charset=utf-8","X-Content-Type-Options": "nosniff"}});
 }
 
-function openapi(): Response {
+function openapi(url: URL): Response {
 	return jsonResponse({
 		openapi: "3.0.3",
 		info: {
@@ -202,7 +202,7 @@ function openapi(): Response {
 			description: "API for the Flight Information Display System.",
 			version: "1.0.0"
 		},
-		servers: [{url: "https://fids.carlostcdev.workers.dev"}],
+		servers: [{url: url.origin}],
 		paths: {
 			"/airports": {
 				get: {

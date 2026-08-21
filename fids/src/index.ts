@@ -4,6 +4,7 @@ import {AeroDataBoxAirportSearchResponse} from "./interfaces/aerodatabox-airport
 import {Env} from "./interfaces/env";
 import {swaggerHtml} from "./docs/swagger";
 import {getOpenApiSpec} from "./docs/openapi";
+import {NearbyAirport} from "./interfaces/nearby-airport";
 
 const corsHeaders = {"Access-Control-Allow-Origin": "*","Access-Control-Allow-Methods": "GET, OPTIONS","Access-Control-Allow-Headers": "Content-Type"} satisfies Record<string, string>;
 const jsonHeaders = {...corsHeaders,"Content-Type": "application/json","X-Content-Type-Options": "nosniff"} satisfies Record<string, string>;
@@ -76,7 +77,7 @@ async function nearbyAirports(request: Request, env: Env): Promise<Response> {
 	const records = data.items ?? [];
 	return jsonResponse(records.filter(airport => airport.iata).map(airport => ({
 		iata_code: airport.iata, name: airport.name, city: airport.municipalityName ?? ""
-	})), 200);
+	} as NearbyAirport)), 200);
 }
 
 function filterCodeshares(flights: Flight[]): Flight[] {

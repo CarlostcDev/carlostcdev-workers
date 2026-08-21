@@ -1,5 +1,10 @@
 import {Airport} from "./interfaces/airport";
-interface Env {AIRLABS_API_KEY: string; RAPIDAPI_KEY: string;}
+import {Flight} from "./interfaces/flight";
+import {AeroDataBoxAirportSearchResponse} from "./interfaces/aerodatabox-airport-search-response";
+import {Env} from "./interfaces/env";
+import {swaggerHtml} from "./docs/swagger";
+import {getOpenApiSpec} from "./docs/openapi";
+
 const corsHeaders = {"Access-Control-Allow-Origin": "*","Access-Control-Allow-Methods": "GET, OPTIONS","Access-Control-Allow-Headers": "Content-Type"} satisfies Record<string, string>;
 const jsonHeaders = {...corsHeaders,"Content-Type": "application/json","X-Content-Type-Options": "nosniff"} satisfies Record<string, string>;
 const AIRLABS_API = "https://airlabs.co/api/v9";
@@ -10,15 +15,22 @@ export default {
 	async fetch(request: Request, env: Env): Promise<Response> {
 		if (request.method === "OPTIONS") return new Response(null, {status: 204, headers: corsHeaders});
 		if (request.method !== "GET") return jsonResponse({error: "Method Not Allowed"}, 405);
-		if (!env.AIRLABS_API_KEY || !env.RAPIDAPI_KEY) return jsonResponse({error: "Server configuration error"}, 500);
 		const url = new URL(request.url);
-
 		try {
 			if (url.pathname === "/docs") return docs();
 			if (url.pathname === "/openapi.json") return openapi(url);
-			if (url.pathname === "/schedules") return await schedules(url, env);
-			if (url.pathname === "/airports") return await airports(env);
-			if (url.pathname === "/airport") return await airport(url, env);
+			if (url.pathname === "/schedules") {
+				if (!env.RAPIDAPI_KEY) return jsonResponse({error: "Server configuration error"}, 500);
+				return await schedules(url, env);
+			}
+			if (url.pathname === "/nearby-airports") {
+				if (!env.RAPIDAPI_KEY) return jsonResponse({error: "Server configuration error"}, 500);
+				return await nearbyAirports(request, env);
+			}
+			if (url.pathname === "/airports") {
+				if (!env.AIRLABS_API_KEY) return jsonResponse({error: "Server configuration error"}, 500);
+				return await airports(env);
+			}
 			return new Response("Not Found", {status: 404, headers: corsHeaders});
 		} catch {
 			return jsonResponse({error: "Internal Server Error"}, 500);
@@ -31,7 +43,6 @@ async function schedules(url: URL, env: Env): Promise<Response> {
 	const arrIata = normalizeIata(url.searchParams.get("arr_iata"));
 	if (!depIata && !arrIata) return jsonResponse({error: "Missing dep_iata or arr_iata parameter"}, 400);
 	if (depIata && arrIata) return jsonResponse({error: "Use only dep_iata or arr_iata"}, 400);
-
 	const airportIata = depIata ?? arrIata!;
 	const apiUrl = new URL(`${AERODATABOX_API}/flights/airports/iata/${airportIata}`);
 	apiUrl.searchParams.set("offsetMinutes", "0");
@@ -43,57 +54,38 @@ async function schedules(url: URL, env: Env): Promise<Response> {
 	apiUrl.searchParams.set("withCargo", "true");
 	apiUrl.searchParams.set("withPrivate", "true");
 	apiUrl.searchParams.set("withLocation", "false");
-
 	const response = await fetchAeroDataBox(apiUrl, env);
 	if (!response.ok) return aeroDataBoxError(response);
-
 	const data = await response.json() as {departures?: Flight[]; arrivals?: Flight[]};
-
 	if (depIata) data.departures = filterCodeshares(data.departures ?? []);
 	if (arrIata) data.arrivals = filterCodeshares(data.arrivals ?? []);
-
 	return jsonResponse(data, 200);
 }
 
-interface Flight {
-	departure?: {
-		scheduledTime?: {
-			utc?: string;
-			local?: string;
-		};
-		revisedTime?: {
-			utc?: string;
-			local?: string;
-		};
-	};
-	arrival?: {
-		scheduledTime?: {
-			utc?: string;
-			local?: string;
-		};
-		revisedTime?: {
-			utc?: string;
-			local?: string;
-		};
-	};
-	number?: string;
-	status?: string;
-	codeshareStatus?: string;
-	airline?: {
-		iata?: string;
-		icao?: string;
-	};
+async function nearbyAirports(request: Request, env: Env): Promise<Response> {
+	const ip = request.headers.get("CF-Connecting-IP");
+	if (!ip) return jsonResponse({error: "Unable to determine client IP address"}, 400);
+	const apiUrl = new URL(`${AERODATABOX_API}/airports/search/ip`);
+	apiUrl.searchParams.set("q", ip);
+	apiUrl.searchParams.set("radiusKm", "200");
+	apiUrl.searchParams.set("limit", "50");
+	apiUrl.searchParams.set("withFlightInfoOnly", "true");
+	const response = await fetchAeroDataBox(apiUrl, env);
+	if (!response.ok) return aeroDataBoxError(response);
+	const data = await response.json() as AeroDataBoxAirportSearchResponse;
+	const records = data.items ?? [];
+	return jsonResponse(records.filter(airport => airport.iata).map(airport => ({
+		iata_code: airport.iata, name: airport.name, city: airport.municipalityName ?? ""
+	})), 200);
 }
 
 function filterCodeshares(flights: Flight[]): Flight[] {
 	const seen = new Set<string>();
-
 	return flights.filter(flight => {
 		const key = [
 			flight.departure?.scheduledTime?.utc ?? flight.departure?.revisedTime?.utc ?? "",
 			flight.arrival?.scheduledTime?.utc ?? flight.arrival?.revisedTime?.utc ?? ""
 		].join("|");
-
 		if (seen.has(key)) return false;
 		seen.add(key);
 		return true;
@@ -110,20 +102,6 @@ async function airports(env: Env): Promise<Response> {
 	return jsonResponse(records.filter(airport => airport.iata_code).map(airport => ({iata_code: airport.iata_code, name: airport.name})), 200);
 }
 
-async function airport(url: URL, env: Env): Promise<Response> {
-	const iata = normalizeIata(url.searchParams.get("iata"));
-	if (!iata) return jsonResponse({error: "Invalid or missing IATA code"}, 400);
-	const apiUrl = new URL(`${AIRLABS_API}/airports`);
-	apiUrl.searchParams.set("api_key", env.AIRLABS_API_KEY);
-	apiUrl.searchParams.set("iata_code", iata);
-	const response = await fetchAirLabs(apiUrl);
-	if (!response.ok) return airLabsError(response);
-	const data = await response.json() as Airport[] | {response?: Airport[]};
-	const records = Array.isArray(data) ? data : data.response ?? [];
-	if (records.length === 0) return jsonResponse({error: "Airport not found"}, 404);
-	return jsonResponse(records[0], 200);
-}
-
 async function fetchAirLabs(url: URL): Promise<Response> {
 	try {
 		return await fetch(url, {signal: AbortSignal.timeout(10000)});
@@ -135,10 +113,7 @@ async function fetchAirLabs(url: URL): Promise<Response> {
 async function fetchAeroDataBox(url: URL, env: Env): Promise<Response> {
 	try {
 		return await fetch(url, {
-			headers: {
-				"X-RapidAPI-Key": env.RAPIDAPI_KEY,
-				"X-RapidAPI-Host": "aerodatabox.p.rapidapi.com"
-			},
+			headers: {"X-RapidAPI-Key": env.RAPIDAPI_KEY, "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com"},
 			signal: AbortSignal.timeout(10000)
 		});
 	} catch {
@@ -168,107 +143,9 @@ function jsonResponse(body: unknown, status: number): Response {
 }
 
 function docs(): Response {
-	return new Response(`<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css">
-    <title>FIDS API Documentation</title>
-</head>
-<body>
-    <div id="swagger-ui"></div>
-    <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
-    <script>
-        window.onload = () => {
-            SwaggerUIBundle({
-                url: "/openapi.json",
-                dom_id: "#swagger-ui",
-                deepLinking: true,
-                presets: [SwaggerUIBundle.presets.apis],
-                layout: "BaseLayout"
-            });
-        };
-    </script>
-</body>
-</html>`, {status: 200, headers: {"Content-Type": "text/html; charset=utf-8","X-Content-Type-Options": "nosniff"}});
+	return new Response(swaggerHtml, {status: 200, headers: {"Content-Type": "text/html; charset=utf-8", "X-Content-Type-Options": "nosniff"}});
 }
 
 function openapi(url: URL): Response {
-	return jsonResponse({
-		openapi: "3.0.3",
-		info: {
-			title: "FIDS API",
-			description: "API for the Flight Information Display System.",
-			version: "1.0.0"
-		},
-		servers: [{url: url.origin}],
-		paths: {
-			"/airports": {
-				get: {
-					summary: "Get airports",
-					description: "Returns all airports with an IATA code.",
-					operationId: "getAirports",
-					responses: {
-						"200": {
-							description: "List of airports",
-							content: {
-								"application/json": {
-									schema: {
-										type: "array",
-										items: {$ref: "#/components/schemas/Airport"}
-									}
-								}
-							}
-						}
-					}
-				}
-			},
-			"/airport": {
-				get: {
-					summary: "Get airport",
-					description: "Returns information about a specific airport.",
-					operationId: "getAirport",
-					parameters: [{
-						name: "iata",
-						in: "query",
-						required: true,
-						description: "Three-letter IATA airport code.",
-						schema: {type: "string",pattern: "^[A-Za-z]{3}$",example: "MAD"}
-					}],
-					responses: {
-						"200": {description: "Airport information"},
-						"400": {description: "Invalid or missing IATA code"},
-						"404": {description: "Airport not found"}
-					}
-				}
-			},
-			"/schedules": {
-				get: {
-					summary: "Get flight schedules",
-					description: "Returns departures and arrivals from AeroDataBox using a relative 12-hour time range starting from the current time.",
-					operationId: "getSchedules",
-					parameters: [
-						{name: "dep_iata",in: "query",required: false,description: "Departure airport IATA code.",schema: {type: "string",pattern: "^[A-Za-z]{3}$",example: "MAD"}},
-						{name: "arr_iata",in: "query",required: false,description: "Arrival airport IATA code.",schema: {type: "string",pattern: "^[A-Za-z]{3}$",example: "MAD"}}
-					],
-					responses: {
-						"200": {description: "AeroDataBox flight schedules"},
-						"400": {description: "Invalid parameters"}
-					}
-				}
-			}
-		},
-		components: {
-			schemas: {
-				Airport: {
-					type: "object",
-					properties: {
-						iata_code: {type: "string",example: "MAD"},
-						name: {type: "string",example: "Adolfo Suarez Madrid-Barajas Airport"}
-					}
-				}
-			}
-		}
-	}, 200);
+	return jsonResponse(getOpenApiSpec(url), 200);
 }

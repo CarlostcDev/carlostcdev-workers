@@ -1,0 +1,22 @@
+[
+	{
+		"iata_code": "ALC",
+		"name": "Alicante",
+		"city": "Alicante"
+	},
+	{
+		"iata_code": "RMU",
+		"name": "Murcia -Corvera",
+		"city": "Murcia"
+	},
+	{
+		"iata_code": "VLC",
+		"name": "Valencia",
+		"city": "Valencia"
+	},
+	{
+		"iata_code": "IBZ",
+		"name": "Ibiza Town Ibiza",
+		"city": "Ibiza Town"
+	}
+]

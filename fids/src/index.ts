@@ -6,6 +6,10 @@ import {swaggerHtml} from "./docs/swagger";
 import {getOpenApiSpec} from "./docs/openapi";
 import {NearbyAirport} from "./interfaces/nearby-airport";
 
+import nearbyAirportsMock from "./mocks/nearby-airports.json";
+import schedulesArrivalsMock from "./mocks/schedules-arrivals.json";
+import schedulesDeparturesMock from "./mocks/schedules-departures.json";
+
 const corsHeaders = {"Access-Control-Allow-Origin": "*","Access-Control-Allow-Methods": "GET, OPTIONS","Access-Control-Allow-Headers": "Content-Type"} satisfies Record<string, string>;
 const jsonHeaders = {...corsHeaders,"Content-Type": "application/json","X-Content-Type-Options": "nosniff"} satisfies Record<string, string>;
 const AIRLABS_API = "https://airlabs.co/api/v9";
@@ -17,20 +21,21 @@ export default {
 		if (request.method === "OPTIONS") return new Response(null, {status: 204, headers: corsHeaders});
 		if (request.method !== "GET") return jsonResponse({error: "Method Not Allowed"}, 405);
 		const url = new URL(request.url);
+		const isDev = url.searchParams.get("dev") === "true";
 		try {
 			if (url.pathname === "/docs") return docs();
 			if (url.pathname === "/openapi.json") return openapi(url);
 			if (url.pathname === "/schedules") {
-				if (!env.RAPIDAPI_KEY) return jsonResponse({error: "Server configuration error"}, 500);
-				return await schedules(url, env);
+				if (!env.RAPIDAPI_KEY && !isDev) return jsonResponse({error: "Server configuration error"}, 500);
+				return await schedules(url, env, isDev);
 			}
 			if (url.pathname === "/nearby-airports") {
-				if (!env.RAPIDAPI_KEY) return jsonResponse({error: "Server configuration error"}, 500);
-				return await nearbyAirports(request, env);
+				if (!env.RAPIDAPI_KEY && !isDev) return jsonResponse({error: "Server configuration error"}, 500);
+				return await nearbyAirports(request, env, isDev);
 			}
 			if (url.pathname === "/airports") {
-				if (!env.AIRLABS_API_KEY) return jsonResponse({error: "Server configuration error"}, 500);
-				return await airports(env);
+				if (!env.AIRLABS_API_KEY && !isDev) return jsonResponse({error: "Server configuration error"}, 500);
+				return await airports(env, isDev);
 			}
 			return new Response("Not Found", {status: 404, headers: corsHeaders});
 		} catch {
@@ -39,11 +44,25 @@ export default {
 	}
 } satisfies ExportedHandler<Env>;
 
-async function schedules(url: URL, env: Env): Promise<Response> {
+async function schedules(url: URL, env: Env, isDev: boolean): Promise<Response> {
 	const depIata = normalizeIata(url.searchParams.get("dep_iata"));
 	const arrIata = normalizeIata(url.searchParams.get("arr_iata"));
 	if (!depIata && !arrIata) return jsonResponse({error: "Missing dep_iata or arr_iata parameter"}, 400);
 	if (depIata && arrIata) return jsonResponse({error: "Use only dep_iata or arr_iata"}, 400);
+
+	if (isDev) {
+		const data: {departures?: Flight[]; arrivals?: Flight[]} = {};
+		if (depIata) {
+			const mockData = schedulesDeparturesMock as unknown as { departures: Flight[] };
+			data.departures = filterCodeshares(mockData.departures ?? []);
+		}
+		if (arrIata) {
+			const mockData = schedulesArrivalsMock as unknown as { arrivals: Flight[] };
+			data.arrivals = filterCodeshares(mockData.arrivals ?? []);
+		}
+		return jsonResponse(data, 200);
+	}
+
 	const airportIata = depIata ?? arrIata!;
 	const apiUrl = new URL(`${AERODATABOX_API}/flights/airports/iata/${airportIata}`);
 	apiUrl.searchParams.set("offsetMinutes", "0");
@@ -63,7 +82,15 @@ async function schedules(url: URL, env: Env): Promise<Response> {
 	return jsonResponse(data, 200);
 }
 
-async function nearbyAirports(request: Request, env: Env): Promise<Response> {
+async function nearbyAirports(request: Request, env: Env, isDev: boolean): Promise<Response> {
+	if (isDev) {
+		const data = nearbyAirportsMock as unknown as AeroDataBoxAirportSearchResponse;
+		const records = data.items ?? [];
+		return jsonResponse(records.filter(airport => airport.iata).map(airport => ({
+			iata_code: airport.iata, name: airport.name, city: airport.municipalityName ?? ""
+		} as NearbyAirport)), 200);
+	}
+
 	const ip = request.headers.get("CF-Connecting-IP");
 	if (!ip) return jsonResponse({error: "Unable to determine client IP address"}, 400);
 	const apiUrl = new URL(`${AERODATABOX_API}/airports/search/ip`);
@@ -93,7 +120,11 @@ function filterCodeshares(flights: Flight[]): Flight[] {
 	});
 }
 
-async function airports(env: Env): Promise<Response> {
+async function airports(env: Env, isDev: boolean): Promise<Response> {
+	if (isDev) {
+		return jsonResponse([{iata_code: "MAD", name: "Adolfo Suárez Madrid–Barajas Airport"}], 200);
+	}
+
 	const apiUrl = new URL(`${AIRLABS_API}/airports`);
 	apiUrl.searchParams.set("api_key", env.AIRLABS_API_KEY);
 	const response = await fetchAirLabs(apiUrl);

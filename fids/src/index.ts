@@ -83,13 +83,7 @@ async function schedules(url: URL, env: Env, isDev: boolean): Promise<Response> 
 }
 
 async function nearbyAirports(request: Request, env: Env, isDev: boolean): Promise<Response> {
-	if (isDev) {
-		const data = nearbyAirportsMock as unknown as AeroDataBoxAirportSearchResponse;
-		const records = data.items ?? [];
-		return jsonResponse(records.filter(airport => airport.iata).map(airport => ({
-			iata_code: airport.iata, name: airport.name, city: airport.municipalityName ?? ""
-		} as NearbyAirport)), 200);
-	}
+	if (isDev) return jsonResponse(nearbyAirportsMock, 200);
 
 	const ip = request.headers.get("CF-Connecting-IP");
 	if (!ip) return jsonResponse({error: "Unable to determine client IP address"}, 400);
